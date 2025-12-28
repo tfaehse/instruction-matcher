@@ -14,7 +14,7 @@ class DetectedPart:
     cluster_id: int = -1
     cluster_score: float = 0.0
     hist_score: float = 0.0
-    sift_score: float = 0.0
+    hog_score: float = 0.0
     phash_score: float = 0.0
 
 

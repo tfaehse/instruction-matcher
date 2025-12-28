@@ -4,6 +4,7 @@ from typing import Dict, Optional, Tuple
 
 import cv2
 import numpy as np
+from sklearn.cluster import DBSCAN
 
 
 def _normalize_size(img_bgr: np.ndarray, size: int = 160) -> np.ndarray:
@@ -102,13 +103,13 @@ def assign_cluster(
     color_hist: np.ndarray,
     hog_desc: np.ndarray,
     clusters: Dict[int, Dict],
-    min_hist: float = 0.998,
-    min_hog: float = 0.5,
+    min_hist: float = 0.997,
+    min_hog: float = 0.95,
     min_phash: float = 0.9,
 ) -> Tuple[int, Dict[str, float]]:
     """Assign to an existing cluster or create a new one."""
     best_id = None
-    best_scores = {"hist": 0.0, "sift": 0.0, "phash": 0.0, "final": 0.0}
+    best_scores = {"hist": 0.0, "hog": 0.0, "phash": 0.0, "final": 0.0}
 
     for cid, c in clusters.items():
         hist_score = cv2.compareHist(color_hist, c["rep_hist"], cv2.HISTCMP_CORREL)
@@ -126,7 +127,7 @@ def assign_cluster(
         best_id = cid
         best_scores = {
             "hist": float(hist_score),
-            "sift": float(hog_score),
+            "hog": float(hog_score),
             "phash": float(ph_score),
             "final": 0.0,
         }
@@ -143,4 +144,126 @@ def assign_cluster(
         "count": 0,
         "examples": [],
     }
-    return new_id, {"hist": 0.0, "sift": 0.0, "phash": 0.0, "final": 0.0}
+    return new_id, {"hist": 0.0, "hog": 0.0, "phash": 0.0, "final": 0.0}
+
+
+def _score_pair(
+    a: dict,
+    b: dict,
+    min_hist: float,
+    min_hog: float,
+    min_phash: float,
+) -> tuple[float, float, float, float]:
+    hist_score = float(cv2.compareHist(a["hist"], b["hist"], cv2.HISTCMP_CORREL))
+    hog_score = float(_hog_match_score(a["hog"], b["hog"]))
+    ph_score = float(_phash_score(a["phash"], b["phash"]))
+    if hist_score < min_hist or hog_score < min_hog or ph_score < min_phash:
+        return hist_score, hog_score, ph_score, 0.0
+    dist = (1.0 - max(0.0, hist_score)) * 0.4 + (1.0 - hog_score) * 0.4 + (1.0 - ph_score) * 0.2
+    final = 1.0 - dist
+    return hist_score, hog_score, ph_score, final
+
+
+def offline_cluster(
+    items: list[dict],
+    eps: float = 0.1,
+    min_samples: int = 1,
+    min_hist: float = 0.9925,
+    min_hog: float = 0.975,
+    min_phash: float = 0.925,
+) -> tuple[list[dict], list[dict], np.ndarray, Dict[str, np.ndarray]]:
+    """Cluster items offline with DBSCAN and return updated items + cluster summaries + scores."""
+    if not items:
+        empty = np.zeros((0, 0), dtype=np.float64)
+        return items, [], empty, {"hist": empty, "hog": empty, "phash": empty, "final": empty}
+
+    n = len(items)
+    dist = np.zeros((n, n), dtype=np.float64)
+    hist_m = np.zeros((n, n), dtype=np.float64)
+    hog_m = np.zeros((n, n), dtype=np.float64)
+    phash_m = np.zeros((n, n), dtype=np.float64)
+    final_m = np.zeros((n, n), dtype=np.float64)
+    for i in range(n):
+        for j in range(i + 1, n):
+            hist_score, hog_score, ph_score, final = _score_pair(items[i], items[j], min_hist, min_hog, min_phash)
+            if final <= 0.0:
+                d = 1.0
+            else:
+                d = 1.0 - final
+                if d < 0.0:
+                    d = 0.0
+            dist[i, j] = d
+            dist[j, i] = d
+            hist_m[i, j] = hist_m[j, i] = hist_score
+            hog_m[i, j] = hog_m[j, i] = hog_score
+            phash_m[i, j] = phash_m[j, i] = ph_score
+            final_m[i, j] = final_m[j, i] = final
+    for i in range(n):
+        hist_m[i, i] = 1.0
+        hog_m[i, i] = 1.0
+        phash_m[i, i] = 1.0
+        final_m[i, i] = 1.0
+
+    clusterer = DBSCAN(eps=eps, min_samples=min_samples, metric="precomputed")
+    labels = clusterer.fit_predict(dist)
+
+    next_cluster = 0
+    label_map: Dict[int, int] = {}
+    for lab in labels:
+        if lab == -1:
+            continue
+        if lab not in label_map:
+            label_map[lab] = next_cluster
+            next_cluster += 1
+
+    clusters: Dict[int, Dict] = {}
+    for idx, lab in enumerate(labels):
+        if lab == -1:
+            cid = next_cluster
+            next_cluster += 1
+        else:
+            cid = label_map[lab]
+
+        items[idx]["cluster_id"] = cid
+        clusters.setdefault(cid, {"count": 0, "examples": [], "rep_index": idx})
+        clusters[cid]["count"] += int(items[idx]["qty"])
+        if len(clusters[cid]["examples"]) < 10:
+            clusters[cid]["examples"].append(str(items[idx]["crop_path"]))
+
+    for cid in clusters.keys():
+        members = [i for i, it in enumerate(items) if it["cluster_id"] == cid]
+        if len(members) == 1:
+            clusters[cid]["rep_index"] = members[0]
+            continue
+        best_idx = members[0]
+        best_score = 1e9
+        for i in members:
+            avg_dist = float(np.mean([dist[i, j] for j in members]))
+            if avg_dist < best_score:
+                best_score = avg_dist
+                best_idx = i
+        clusters[cid]["rep_index"] = best_idx
+
+    for idx, item in enumerate(items):
+        rep = items[clusters[item["cluster_id"]]["rep_index"]]
+        hist_score, hog_score, ph_score, final = _score_pair(item, rep, min_hist, min_hog, min_phash)
+        item["hist_score"] = hist_score
+        item["hog_score"] = hog_score
+        item["phash_score"] = ph_score
+        item["cluster_score"] = final
+
+    out_clusters: list[dict] = []
+    for cid, c in sorted(clusters.items(), key=lambda kv: kv[0]):
+        rep = items[c["rep_index"]]
+        out_clusters.append(
+            {
+                "cluster_id": int(cid),
+                "rep_phash": str(rep["phash"]),
+                "count": int(c["count"]),
+                "examples": list(c["examples"]),
+            }
+        )
+
+    thresholds = {"hist": min_hist, "hog": min_hog, "phash": min_phash}
+    scores = {"hist": hist_m, "hog": hog_m, "phash": phash_m, "final": final_m, "thresholds": thresholds}
+    return items, out_clusters, dist, scores

@@ -51,20 +51,20 @@ def find_callout_box(img_bgr: np.ndarray) -> Optional[Tuple[int, int, int, int]]
 def _callout_foreground_boxes(callout_bgr: np.ndarray) -> List[Tuple[int, int, int, int]]:
     """Return bounding boxes of non-blue foreground parts in the callout."""
     hsv = cv2.cvtColor(callout_bgr, cv2.COLOR_BGR2HSV)
-    lower = np.array([80, 10, 180], dtype=np.uint8)
-    upper = np.array([130, 120, 255], dtype=np.uint8)
+    lower = np.array([100, 20, 180], dtype=np.uint8)
+    upper = np.array([110, 50, 255], dtype=np.uint8)
     blue = cv2.inRange(hsv, lower, upper)
     fg = cv2.bitwise_not(blue)
 
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
-    fg = cv2.morphologyEx(fg, cv2.MORPH_OPEN, kernel, iterations=2)
+    fg = cv2.morphologyEx(fg, cv2.MORPH_OPEN, kernel, iterations=3)
     fg = cv2.morphologyEx(fg, cv2.MORPH_CLOSE, kernel, iterations=2)
 
     num_labels, _, stats, _ = cv2.connectedComponentsWithStats(fg, connectivity=8)
     boxes: List[Tuple[int, int, int, int]] = []
     for i in range(1, num_labels):
         x, y, w, h, area = stats[i]
-        if area < 300:
+        if area < 400:
             continue
         if w < 18 or h < 18:
             continue
@@ -149,7 +149,7 @@ def extract_parts_from_callout(
             continue
 
         eh, ew = ext_crop.shape[:2]
-        text_h = max(10, int(eh * 0.35))
+        text_h = max(50, int(eh * 0.5))
         text_w = max(20, int(ew * 0.6))
         text_crop = ext_crop[eh - text_h : eh, 0:text_w]
         qty = _ocr_qty_from_crop(text_crop)

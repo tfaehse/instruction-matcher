@@ -8,6 +8,9 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Tuple
 
+import cv2
+import numpy as np
+import pandas as pd
 import streamlit as st
 
 
@@ -101,12 +104,17 @@ def render_overview(results: Dict, out_dir: Path) -> None:
                         crop_path = Path(part["crop_path"])
                         with patch_cols[i % 4]:
                             st.caption(
-                                "Qty: {} · {} · score {:.3f} (hist {:.3f}, sift {:.3f}, phash {:.3f})".format(
+                                "Page {} · Qty {} · {} · dist {:.3f}".format(
+                                    int(part.get("page_index", 0)) + 1,
                                     part["qty"],
                                     "confident" if part.get("qty_confident") else "uncertain",
-                                    float(part.get("cluster_score", 0.0)),
+                                    1.0 - float(part.get("cluster_score", 0.0)),
+                                )
+                            )
+                            st.caption(
+                                "hist {:.3f} · hog {:.3f} · phash {:.3f}".format(
                                     float(part.get("hist_score", 0.0)),
-                                    float(part.get("sift_score", 0.0)),
+                                    float(part.get("hog_score", 0.0)),
                                     float(part.get("phash_score", 0.0)),
                                 )
                             )
@@ -165,11 +173,61 @@ def main() -> None:
     st.set_page_config(page_title="Instruction Matcher", layout="wide")
     st.title("Instruction Matcher")
 
-    view = st.sidebar.radio("View", ["Overview", "Page Viewer"], index=0)
+    view = st.sidebar.radio("View", ["Overview", "Page Viewer", "Distance Matrix"], index=0)
     if view == "Overview":
         render_overview(results, out_dir)
-    else:
+    elif view == "Page Viewer":
         render_page_view(results, out_dir)
+    else:
+        render_distance_matrix(out_dir)
+
+
+def render_distance_matrix(out_dir: Path) -> None:
+    st.header("Distance Matrix")
+    items_path = out_dir / "dbscan_items.json"
+    scores_path = out_dir / "dbscan_scores.npz"
+    if not items_path.exists() or not scores_path.exists():
+        st.info("Run the extractor to generate dbscan_scores.npz and dbscan_items.json.")
+        return
+
+    items = json.loads(items_path.read_text(encoding="utf-8"))
+    scores = np.load(scores_path)
+    thresholds = scores.get("thresholds")
+    if thresholds is None:
+        thresholds = np.array([0.0, 0.0, 0.0])
+    hist_th, hog_th, phash_th = float(thresholds[0]), float(thresholds[1]), float(thresholds[2])
+
+    st.subheader("Patches")
+    cols = st.columns(6)
+    for i, item in enumerate(items):
+        with cols[i % 6]:
+            st.caption(f"{i}: Page {int(item['page_index']) + 1}")
+            p = Path(item["crop_path"])
+            if p.exists():
+                st.image(str(p), width=100)
+            else:
+                st.caption("Missing crop")
+
+    def show_matrix(name: str, threshold: float):
+        mat = scores[name]
+        mat = np.clip(mat, 0.0, 1.0)
+        ok = (mat >= threshold).astype("uint8")
+        img = np.zeros((mat.shape[0], mat.shape[1], 3), dtype="uint8")
+        img[ok == 1] = (0, 200, 0)
+        img[ok == 0] = (200, 0, 0)
+        st.subheader(f"{name.upper()} Matrix")
+        st.image(img, caption=f"{name} scores (green >= {threshold:.3f}, red < {threshold:.3f})")
+        df = pd.DataFrame(np.round(mat, 3))
+        def _style(val: float) -> str:
+            if val >= threshold:
+                return "background-color: #1b7f3b; color: white;"
+            return "background-color: #b51d1a; color: white;"
+        st.dataframe(df.style.map(_style))
+
+    show_matrix("hist", hist_th)
+    show_matrix("hog", hog_th)
+    show_matrix("phash", phash_th)
+    show_matrix("final", 0.0)
 
 
 if __name__ == "__main__":

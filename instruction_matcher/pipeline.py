@@ -11,7 +11,7 @@ import numpy as np
 from tqdm import tqdm
 
 from .callout import extract_parts_from_callout, find_callout_box
-from .clustering import assign_cluster, compute_color_hist, compute_hog_desc, compute_phash, normalize_to_512
+from .clustering import compute_color_hist, compute_hog_desc, compute_phash, normalize_to_512, offline_cluster
 from .models import Cluster, DetectedPart
 from .orientation import normalize_page_orientation
 from .utils import mkdirp
@@ -35,7 +35,7 @@ def process(
     doc = fitz.open(str(pdf_path))
 
     detected: List[DetectedPart] = []
-    clusters: Dict[int, Dict] = {}
+    items: List[Dict] = []
 
     start_idx = max(0, start_page - 1)
     end_idx = min(end_page - 1, doc.page_count - 1)
@@ -75,14 +75,9 @@ def process(
             ph = compute_phash(norm_part)
             hist = compute_color_hist(norm_part)
             hog_desc = compute_hog_desc(norm_part)
-            cid, scores = assign_cluster(ph, hist, hog_desc, clusters)
 
-            crop_path = debug_dir / f"p{page_index:03d}_partcrop_{i:02d}_c{cid:03d}.png"
+            crop_path = debug_dir / f"p{page_index:03d}_partcrop_{i:02d}.png"
             cv2.imwrite(str(crop_path), norm_part)
-
-            clusters[cid]["count"] += qty_int
-            if len(clusters[cid]["examples"]) < 10:
-                clusters[cid]["examples"].append(str(crop_path))
 
             detected.append(
                 DetectedPart(
@@ -91,19 +86,50 @@ def process(
                     qty_confident=qty_confident,
                     crop_path=str(crop_path),
                     phash=ph,
-                    cluster_id=cid,
-                    cluster_score=float(scores["final"]),
-                    hist_score=float(scores["hist"]),
-                    sift_score=float(scores["sift"]),
-                    phash_score=float(scores["phash"]),
                 )
             )
+            items.append(
+                {
+                    "index": len(detected) - 1,
+                    "phash": ph,
+                    "hist": hist,
+                    "hog": hog_desc,
+                    "qty": qty_int,
+                    "crop_path": str(crop_path),
+                }
+            )
+
+    items, out_clusters_raw, dist, scores = offline_cluster(items)
+    if dist.size:
+        np.save(out_dir / "dbscan_distances.npy", dist)
+        np.savez_compressed(
+            out_dir / "dbscan_scores.npz",
+            hist=scores["hist"],
+            hog=scores["hog"],
+            phash=scores["phash"],
+            final=scores["final"],
+            thresholds=np.array([scores["thresholds"]["hist"], scores["thresholds"]["hog"], scores["thresholds"]["phash"]]),
+        )
+        (out_dir / "dbscan_items.json").write_text(
+            json.dumps(
+                [{"index": i, "crop_path": d.crop_path, "page_index": d.page_index} for i, d in enumerate(detected)],
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+    for item in items:
+        idx = item["index"]
+        detected[idx].cluster_id = int(item["cluster_id"])
+        detected[idx].cluster_score = float(item["cluster_score"])
+        detected[idx].hist_score = float(item["hist_score"])
+        detected[idx].hog_score = float(item["hog_score"])
+        detected[idx].phash_score = float(item["phash_score"])
 
     out_clusters: List[Cluster] = []
-    for cid, c in sorted(clusters.items(), key=lambda kv: kv[0]):
+    for c in out_clusters_raw:
         out_clusters.append(
             Cluster(
-                cluster_id=int(cid),
+                cluster_id=int(c["cluster_id"]),
                 rep_phash=str(c["rep_phash"]),
                 count=int(c["count"]),
                 examples=list(c["examples"]),
