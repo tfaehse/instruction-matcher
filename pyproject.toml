@@ -1,0 +1,15 @@
+[project]
+name = "instruction-matcher"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "easyocr>=1.7.2",
+    "numpy>=2.4.0",
+    "opencv-python>=4.11.0.86",
+    "pymupdf>=1.26.7",
+    "streamlit>=1.52.2",
+    "tqdm>=4.67.1",
+    "watchdog>=6.0.0",
+]
