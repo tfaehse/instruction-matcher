@@ -42,6 +42,8 @@ def process(
     if end_idx < start_idx:
         return [], []
 
+    uncertain_log: List[Dict] = []
+
     for page_index in tqdm(range(start_idx, end_idx + 1), desc="pages", unit="page"):
         img = render_pdf_page(doc, page_index, dpi=dpi)
         cv2.imwrite(str(debug_dir / f"p{page_index:03d}_render.png"), img)
@@ -99,6 +101,18 @@ def process(
                 }
             )
 
+            if not qty_confident:
+                uncertain_log.append(
+                    {
+                        "page_index": page_index,
+                        "part_index": i,
+                        "callout_path": str(debug_dir / f"p{page_index:03d}_callout.png"),
+                        "part_path": str(debug_dir / f"p{page_index:03d}_item{i:02d}_part.png"),
+                        "extended_path": str(debug_dir / f"p{page_index:03d}_item{i:02d}_ext.png"),
+                        "text_path": str(debug_dir / f"p{page_index:03d}_item{i:02d}_text.png"),
+                    }
+                )
+
     items, out_clusters_raw, dist, scores = offline_cluster(items)
     if dist.size:
         np.save(out_dir / "dbscan_distances.npy", dist)
@@ -135,6 +149,9 @@ def process(
                 examples=list(c["examples"]),
             )
         )
+
+    if uncertain_log:
+        (out_dir / "uncertain.json").write_text(json.dumps(uncertain_log, indent=2), encoding="utf-8")
 
     return detected, out_clusters
 

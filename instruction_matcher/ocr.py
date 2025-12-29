@@ -24,7 +24,7 @@ def _easyocr_reader() -> easyocr.Reader:
 def _easyocr_readtext(img_bgr: np.ndarray, allowlist: str) -> list[tuple[str, float, list]]:
     img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
     reader = _easyocr_reader()
-    results = reader.readtext(img_rgb, detail=1, allowlist=allowlist)
+    results = reader.readtext(img_rgb, detail=1, allowlist=allowlist, text_threshold=0.5, low_text=0.3, contrast_ths=0.1, decoder="greedy")
     out = []
     for bbox, text, conf in results:
         if text:

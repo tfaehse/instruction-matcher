@@ -1,6 +1,6 @@
 # instruction_matcher
 
-Vibecoded prototype to count LEGO parts from instruction PDFs by reading the callout boxes per step.
+Vibecoded prototype to count LEGO parts from instruction PDFs by reading the callout boxes per step. The threshold are hardcoded for the exact instructions I wanted to parse, instead of an actual piece of useful software this project is just intended to show how far LLM-assisted development can get you within less than a day of work. Personally, I found it quite impressive. It also goes to show how far traditional computer vision techniques can still get you when applied to a very specific problem, with no access to large data or compute.
 
 ## Requirements
 

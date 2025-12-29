@@ -173,13 +173,15 @@ def main() -> None:
     st.set_page_config(page_title="Instruction Matcher", layout="wide")
     st.title("Instruction Matcher")
 
-    view = st.sidebar.radio("View", ["Overview", "Page Viewer", "Distance Matrix"], index=0)
+    view = st.sidebar.radio("View", ["Overview", "Page Viewer", "Distance Matrix", "Uncertain Qty"], index=0)
     if view == "Overview":
         render_overview(results, out_dir)
     elif view == "Page Viewer":
         render_page_view(results, out_dir)
-    else:
+    elif view == "Distance Matrix":
         render_distance_matrix(out_dir)
+    else:
+        render_uncertain(out_dir)
 
 
 def render_distance_matrix(out_dir: Path) -> None:
@@ -228,6 +230,35 @@ def render_distance_matrix(out_dir: Path) -> None:
     show_matrix("hog", hog_th)
     show_matrix("phash", phash_th)
     show_matrix("final", 0.0)
+
+
+def render_uncertain(out_dir: Path) -> None:
+    st.header("Uncertain Quantities")
+    uncertain_path = out_dir / "uncertain.json"
+    if not uncertain_path.exists():
+        st.info("No uncertain.json found. Re-run the extractor.")
+        return
+
+    entries = json.loads(uncertain_path.read_text(encoding="utf-8"))
+    if not entries:
+        st.info("No uncertain quantities found.")
+        return
+
+    for entry in entries:
+        st.subheader(f"Page {int(entry['page_index']) + 1} · Part {int(entry['part_index']) + 1}")
+        cols = st.columns(4)
+        for col, key, label in zip(
+            cols,
+            ["callout_path", "part_path", "extended_path", "text_path"],
+            ["Callout", "Part", "Extended", "Text"],
+        ):
+            with col:
+                st.caption(label)
+                p = Path(entry[key])
+                if p.exists():
+                    st.image(str(p), width=220)
+                else:
+                    st.caption("Missing")
 
 
 if __name__ == "__main__":

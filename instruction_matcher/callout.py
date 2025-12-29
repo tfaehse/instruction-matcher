@@ -31,9 +31,9 @@ def find_callout_box(img_bgr: np.ndarray) -> Optional[Tuple[int, int, int, int]]
     for c in contours:
         x, y, cw, ch = cv2.boundingRect(c)
         area = cw * ch
-        if area < 0.01 * (w * h):
+        if area < 0.005 * (w * h):
             continue
-        if cw < 150 or ch < 80:
+        if cw < 100 or ch < 80:
             continue
 
         contour_area = cv2.contourArea(c)
@@ -142,7 +142,7 @@ def extract_parts_from_callout(
         if part_crop.size == 0:
             continue
 
-        extend = int(max(16, bh2 * 0.35))
+        extend = int(max(48, bh2 * 0.35))
         ext_bottom = min(h, bottom + extend)
         ext_crop = callout_bgr[top:ext_bottom, left:right]
         if ext_crop.size == 0:
@@ -155,6 +155,7 @@ def extract_parts_from_callout(
         qty = _ocr_qty_from_crop(text_crop)
 
         cv2.imwrite(str(debug_dir / f"p{page_index:03d}_item{idx:02d}_part.png"), part_crop)
+        cv2.imwrite(str(debug_dir / f"p{page_index:03d}_item{idx:02d}_ext.png"), ext_crop)
         cv2.imwrite(str(debug_dir / f"p{page_index:03d}_item{idx:02d}_text.png"), text_crop)
         out.append((part_crop, qty))
 
