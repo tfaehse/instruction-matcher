@@ -24,7 +24,7 @@ def _easyocr_reader() -> easyocr.Reader:
 def _easyocr_readtext(img_bgr: np.ndarray, allowlist: str) -> list[tuple[str, float, list]]:
     img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
     reader = _easyocr_reader()
-    results = reader.readtext(img_rgb, detail=1, allowlist=allowlist, text_threshold=0.5, low_text=0.3, contrast_ths=0.1, decoder="greedy")
+    results = reader.readtext(img_rgb, detail=1, allowlist=allowlist, text_threshold=0.45, low_text=0.25, contrast_ths=0.1, decoder="greedy")
     out = []
     for bbox, text, conf in results:
         if text:
@@ -53,9 +53,3 @@ def _ocr_qty_from_crop(crop_bgr: np.ndarray) -> Optional[int]:
             best_qty = qty
     return best_qty
 
-
-def _ocr_regex_hits(img_bgr: np.ndarray, pattern: str, allowlist: str) -> int:
-    hits = 0
-    for text, _, _ in _easyocr_readtext(img_bgr, allowlist=allowlist):
-        hits += len(re.findall(pattern, text))
-    return hits

@@ -12,13 +12,14 @@ from .ocr import _ocr_qty_from_crop
 def find_callout_box(img_bgr: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
     """Locate the light-blue parts callout box."""
     hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
-    lower = np.array([80, 10, 180], dtype=np.uint8)
-    upper = np.array([130, 120, 255], dtype=np.uint8)
+    lower = np.array([95, 30, 180], dtype=np.uint8)
+    upper = np.array([110, 50, 255], dtype=np.uint8)
     mask = cv2.inRange(hsv, lower, upper)
 
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 9))
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=2)
 
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not contours:
@@ -31,7 +32,7 @@ def find_callout_box(img_bgr: np.ndarray) -> Optional[Tuple[int, int, int, int]]
     for c in contours:
         x, y, cw, ch = cv2.boundingRect(c)
         area = cw * ch
-        if area < 0.005 * (w * h):
+        if area < 0.004 * (w * h):
             continue
         if cw < 100 or ch < 80:
             continue
@@ -48,10 +49,59 @@ def find_callout_box(img_bgr: np.ndarray) -> Optional[Tuple[int, int, int, int]]
     return best
 
 
+def callout_qty_hits(callout_bgr: np.ndarray) -> int:
+    h, w = callout_bgr.shape[:2]
+    band_top = int(h * 0.6)
+    band = callout_bgr[band_top:h, 0:w]
+    if band.size == 0:
+        return 0
+    # Reuse text crop logic by taking a conservative bottom-left region.
+    eh, ew = band.shape[:2]
+    text_h = max(50, int(eh * 0.5))
+    text_w = max(20, int(ew * 0.6))
+    text_crop = band[eh - text_h : eh, 0:text_w]
+    qty = _ocr_qty_from_crop(text_crop)
+    return 1 if qty is not None else 0
+
+
+def callout_text_blob_score(callout_bgr: np.ndarray) -> int:
+    """Score likely text blobs in the bottom-left of the callout."""
+    h, w = callout_bgr.shape[:2]
+    if h == 0 or w == 0:
+        return 0
+    hsv = cv2.cvtColor(callout_bgr, cv2.COLOR_BGR2HSV)
+    lower = np.array([95, 30, 180], dtype=np.uint8)
+    upper = np.array([110, 50, 255], dtype=np.uint8)
+    blue = cv2.inRange(hsv, lower, upper)
+    non_blue = cv2.bitwise_not(blue)
+
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    non_blue = cv2.morphologyEx(non_blue, cv2.MORPH_OPEN, kernel, iterations=1)
+
+    num_labels, _, stats, _ = cv2.connectedComponentsWithStats(non_blue, connectivity=8)
+    x1 = 0
+    y1 = int(h * 0.6)
+    x2 = int(w * 0.5)
+    y2 = h
+
+    score = 0
+    for i in range(1, num_labels):
+        bx, by, bw, bh, area = stats[i]
+        if area < 20 or area > 800:
+            continue
+        if bw > 80 or bh > 80:
+            continue
+        cx = bx + bw / 2.0
+        cy = by + bh / 2.0
+        if x1 <= cx <= x2 and y1 <= cy <= y2:
+            score += 1
+    return score
+
+
 def _callout_foreground_boxes(callout_bgr: np.ndarray) -> List[Tuple[int, int, int, int]]:
     """Return bounding boxes of non-blue foreground parts in the callout."""
     hsv = cv2.cvtColor(callout_bgr, cv2.COLOR_BGR2HSV)
-    lower = np.array([100, 20, 180], dtype=np.uint8)
+    lower = np.array([95, 30, 180], dtype=np.uint8)
     upper = np.array([110, 50, 255], dtype=np.uint8)
     blue = cv2.inRange(hsv, lower, upper)
     fg = cv2.bitwise_not(blue)
@@ -122,15 +172,16 @@ def _split_parts_from_foreground(callout_bgr: np.ndarray) -> List[Tuple[int, int
 
 
 def extract_parts_from_callout(
-    callout_bgr: np.ndarray, debug_dir: Path, page_index: int
-) -> List[Tuple[np.ndarray, Optional[int]]]:
-    """Extract (part_image, qty) candidates from a callout box."""
+    callout_bgr: np.ndarray,
+    page_index: int,
+) -> List[Tuple[np.ndarray, Optional[int], np.ndarray, np.ndarray]]:
+    """Extract (part_image, qty, ext_crop, text_crop) candidates from a callout box."""
     h, w = callout_bgr.shape[:2]
     part_boxes = _split_parts_from_foreground(callout_bgr)
     if not part_boxes:
         return []
 
-    out: List[Tuple[np.ndarray, Optional[int]]] = []
+    out: List[Tuple[np.ndarray, Optional[int], np.ndarray, np.ndarray]] = []
     for idx, (bx, by, bw2, bh2) in enumerate(part_boxes):
         pad = 6
         left = max(0, bx - pad)
@@ -150,13 +201,10 @@ def extract_parts_from_callout(
 
         eh, ew = ext_crop.shape[:2]
         text_h = max(50, int(eh * 0.5))
-        text_w = max(20, int(ew * 0.6))
+        text_w = max(48, int(ew * 0.6))
         text_crop = ext_crop[eh - text_h : eh, 0:text_w]
         qty = _ocr_qty_from_crop(text_crop)
 
-        cv2.imwrite(str(debug_dir / f"p{page_index:03d}_item{idx:02d}_part.png"), part_crop)
-        cv2.imwrite(str(debug_dir / f"p{page_index:03d}_item{idx:02d}_ext.png"), ext_crop)
-        cv2.imwrite(str(debug_dir / f"p{page_index:03d}_item{idx:02d}_text.png"), text_crop)
-        out.append((part_crop, qty))
+        out.append((part_crop, qty, ext_crop, text_crop))
 
     return out

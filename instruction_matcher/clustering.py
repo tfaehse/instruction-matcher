@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict, Optional, Tuple
+from typing import Dict
 
 import cv2
 import numpy as np
@@ -98,54 +98,6 @@ def _phash_score(phash_a: str, phash_b: str) -> float:
     return float(max(0.0, (64 - dist) / 64.0))
 
 
-def assign_cluster(
-    phash: str,
-    color_hist: np.ndarray,
-    hog_desc: np.ndarray,
-    clusters: Dict[int, Dict],
-    min_hist: float = 0.997,
-    min_hog: float = 0.95,
-    min_phash: float = 0.9,
-) -> Tuple[int, Dict[str, float]]:
-    """Assign to an existing cluster or create a new one."""
-    best_id = None
-    best_scores = {"hist": 0.0, "hog": 0.0, "phash": 0.0, "final": 0.0}
-
-    for cid, c in clusters.items():
-        hist_score = cv2.compareHist(color_hist, c["rep_hist"], cv2.HISTCMP_CORREL)
-        if hist_score < min_hist:
-            continue
-
-        hog_score = _hog_match_score(hog_desc, c["rep_hog"])
-
-        ph_score = _phash_score(phash, c["rep_phash"])
-        if hog_score < min_hog:
-            continue
-        if ph_score < min_phash:
-            continue
-
-        best_id = cid
-        best_scores = {
-            "hist": float(hist_score),
-            "hog": float(hog_score),
-            "phash": float(ph_score),
-            "final": 0.0,
-        }
-        break
-
-    if best_id is not None:
-        return int(best_id), best_scores
-
-    new_id = int(max(clusters.keys(), default=-1) + 1)
-    clusters[new_id] = {
-        "rep_phash": phash,
-        "rep_hist": color_hist,
-        "rep_hog": hog_desc,
-        "count": 0,
-        "examples": [],
-    }
-    return new_id, {"hist": 0.0, "hog": 0.0, "phash": 0.0, "final": 0.0}
-
 
 def _score_pair(
     a: dict,
@@ -168,7 +120,7 @@ def offline_cluster(
     items: list[dict],
     eps: float = 0.1,
     min_samples: int = 1,
-    min_hist: float = 0.9925,
+    min_hist: float = 0.995,
     min_hog: float = 0.975,
     min_phash: float = 0.925,
 ) -> tuple[list[dict], list[dict], np.ndarray, Dict[str, np.ndarray]]:

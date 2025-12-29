@@ -10,11 +10,10 @@ import fitz  # PyMuPDF
 import numpy as np
 from tqdm import tqdm
 
-from .callout import extract_parts_from_callout, find_callout_box
+from .callout import callout_qty_hits, callout_text_blob_score, extract_parts_from_callout, find_callout_box
 from .clustering import compute_color_hist, compute_hog_desc, compute_phash, normalize_to_512, offline_cluster
 from .models import Cluster, DetectedPart
-from .orientation import normalize_page_orientation
-from .utils import mkdirp
+from .utils import mkdirp, rotate_90
 
 
 def render_pdf_page(doc, page_index: int, dpi: int = 200) -> np.ndarray:
@@ -48,10 +47,24 @@ def process(
         img = render_pdf_page(doc, page_index, dpi=dpi)
         cv2.imwrite(str(debug_dir / f"p{page_index:03d}_render.png"), img)
 
-        img = normalize_page_orientation(img)
+        rotation_candidates = []
+        for rot in (0, 90, 180, 270):
+            rotated = rotate_90(img, rot)
+            box = find_callout_box(rotated)
+            if box is None:
+                rotation_candidates.append((0, rot, rotated, None, []))
+                continue
+            x, y, w, h = box
+            callout = rotated[y : y + h, x : x + w]
+            parts = extract_parts_from_callout(callout, page_index)
+            qty_hits = sum(1 for _, q, _, _ in parts if q is not None)
+            score = qty_hits * 1000 + callout_qty_hits(callout) * 100 + callout_text_blob_score(callout) * 20
+            rotation_candidates.append((score, rot, rotated, (x, y, w, h), parts))
+
+        rotation_candidates.sort(key=lambda r: r[0], reverse=True)
+        score, rot, img, box, parts = rotation_candidates[0]
         cv2.imwrite(str(debug_dir / f"p{page_index:03d}_oriented.png"), img)
 
-        box = find_callout_box(img)
         if box is None:
             print(f"[warn] page {page_index+1}: callout box not found")
             continue
@@ -60,12 +73,13 @@ def process(
         callout = img[y : y + h, x : x + w]
         cv2.imwrite(str(debug_dir / f"p{page_index:03d}_callout.png"), callout)
 
-        parts = extract_parts_from_callout(callout, debug_dir, page_index)
+        if not parts:
+            parts = extract_parts_from_callout(callout, page_index)
         if not parts:
             print(f"[warn] page {page_index+1}: no parts extracted from callout")
             continue
 
-        for i, (part_img, qty) in enumerate(parts):
+        for i, (part_img, qty, ext_crop, text_crop) in enumerate(parts):
             if qty is None:
                 qty_int = 1
                 qty_confident = False
@@ -80,6 +94,9 @@ def process(
 
             crop_path = debug_dir / f"p{page_index:03d}_partcrop_{i:02d}.png"
             cv2.imwrite(str(crop_path), norm_part)
+            cv2.imwrite(str(debug_dir / f"p{page_index:03d}_item{i:02d}_part.png"), part_img)
+            cv2.imwrite(str(debug_dir / f"p{page_index:03d}_item{i:02d}_ext.png"), ext_crop)
+            cv2.imwrite(str(debug_dir / f"p{page_index:03d}_item{i:02d}_text.png"), text_crop)
 
             detected.append(
                 DetectedPart(
@@ -169,7 +186,7 @@ def build_results(
         "pdf": str(pdf_path),
         "pages_processed": int(len(set(d.page_index for d in detected))),
         "page_range": {"start": int(start_page), "end": int(end_page)},
-        "detected_parts": [asdict(d) for d in detected],
+        "detected_parts": [dict(asdict(d), index=i) for i, d in enumerate(detected)],
         "clusters": [asdict(c) for c in clusters],
         "total_parts_confident": total_parts_confident,
         "total_parts_including_uncertain": total_parts_including_uncertain,

@@ -12,6 +12,9 @@ import cv2
 import numpy as np
 import pandas as pd
 import streamlit as st
+from reportlab.lib.pagesizes import letter
+from reportlab.lib.utils import ImageReader
+from reportlab.pdfgen import canvas
 
 
 def _load_results(out_dir: Path) -> Dict:
@@ -57,14 +60,187 @@ def _get_page_param(default_index: int) -> int:
     return default_index
 
 
+def _apply_overrides(results: Dict, overrides: Dict[int, int]) -> Dict:
+    if not overrides:
+        return results
+    parts = []
+    for p in results.get("detected_parts", []):
+        p = dict(p)
+        if p.get("index") in overrides:
+            p["cluster_id"] = overrides[p["index"]]
+        parts.append(p)
+    results = dict(results)
+    results["detected_parts"] = parts
+    return results
+
+
+def _rebuild_clusters(results: Dict) -> List[Dict]:
+    clusters: Dict[int, Dict] = {}
+    for p in results.get("detected_parts", []):
+        cid = int(p.get("cluster_id", -1))
+        clusters.setdefault(cid, {"cluster_id": cid, "count": 0, "examples": []})
+        clusters[cid]["count"] += int(p.get("qty", 0))
+        if len(clusters[cid]["examples"]) < 10:
+            clusters[cid]["examples"].append(p.get("crop_path", ""))
+    return [clusters[cid] for cid in sorted(clusters.keys())]
+
+
+def _save_overrides(out_dir: Path, overrides: Dict[int, int]) -> None:
+    (out_dir / "cluster_overrides.json").write_text(json.dumps(overrides, indent=2), encoding="utf-8")
+
+
+def _load_overrides(out_dir: Path) -> Dict[int, int]:
+    path = out_dir / "cluster_overrides.json"
+    if not path.exists():
+        return {}
+    data = json.loads(path.read_text(encoding="utf-8"))
+    return {int(k): int(v) for k, v in data.items()}
+
+
+def _export_pdf(out_dir: Path, results: Dict) -> Path:
+    out_path = out_dir / "clusters.pdf"
+    c = canvas.Canvas(str(out_path), pagesize=letter)
+    w, h = letter
+    margin = 36
+    thumb = 180
+    gap = 16
+
+    clusters = _rebuild_clusters(results)
+    cluster_parts = defaultdict(list)
+    for p in results.get("detected_parts", []):
+        cid = int(p.get("cluster_id", -1))
+        cluster_parts[cid].append(p)
+
+    per_page = 6
+    for cluster in clusters:
+        cid = int(cluster.get("cluster_id", -1))
+        parts = cluster_parts.get(cid, [])
+        rep_path = (cluster.get("examples") or [None])[0]
+
+        c.setFont("Helvetica-Bold", 16)
+        c.drawString(margin, h - margin, f"Cluster {cid:03d} · Count {cluster.get('count', 0)}")
+        c.setFont("Helvetica", 10)
+
+        items = []
+        if rep_path and Path(rep_path).exists():
+            items.append((rep_path, f"Count {cluster.get('count', 0)}"))
+        for p in parts:
+            path = p.get("crop_path")
+            if not path or not Path(path).exists():
+                continue
+            items.append((path, f"Qty {p.get('qty', '')}"))
+
+        x0 = margin
+        y0 = h - margin - 30
+        col_w = thumb + gap
+        row_h = thumb + 28
+        col = 0
+        row = 0
+
+        for i, (path, label) in enumerate(items):
+            if i > 0 and i % per_page == 0:
+                c.showPage()
+                c.setFont("Helvetica-Bold", 16)
+                c.drawString(margin, h - margin, f"Cluster {cid:03d} · Count {cluster.get('count', 0)}")
+                c.setFont("Helvetica", 10)
+                col = 0
+                row = 0
+
+            x = x0 + col * col_w
+            y = y0 - row * row_h
+            img = ImageReader(path)
+            c.drawImage(img, x, y - thumb, width=thumb, height=thumb, preserveAspectRatio=True, mask="auto")
+            c.drawString(x, y - thumb - 12, label)
+
+            col += 1
+            if col >= 2:
+                col = 0
+                row += 1
+
+        c.showPage()
+    c.save()
+    return out_path
+
+
 def render_overview(results: Dict, out_dir: Path) -> None:
     st.header("Overview")
+    if st.button("Export PDF"):
+        path = _export_pdf(out_dir, results)
+        st.success(f"Wrote {path}")
     clusters = results.get("clusters", [])
     cluster_pages = _cluster_to_pages(results)
     cluster_parts = defaultdict(list)
     for part in results.get("detected_parts", []):
         cid = int(part.get("cluster_id", -1))
         cluster_parts[cid].append(part)
+
+    if "overrides" not in st.session_state:
+        st.session_state["overrides"] = _load_overrides(out_dir)
+
+    max_cluster = max([int(c.get("cluster_id", -1)) for c in clusters] or [0])
+
+    sort_mode = st.selectbox("Sort clusters by", ["Cluster ID", "Size", "Hist similarity to largest", "Greedy similarity"], index=0)
+    if sort_mode == "Size":
+        clusters = sorted(clusters, key=lambda c: c.get("count", 0), reverse=True)
+    elif sort_mode == "Hist similarity to largest" and clusters:
+        largest = max(clusters, key=lambda c: c.get("count", 0))
+        rep_path = (largest.get("examples") or [None])[0]
+        rep_hist = None
+        if rep_path and Path(rep_path).exists():
+            img = cv2.imread(rep_path)
+            if img is not None:
+                rep_hist = cv2.calcHist([cv2.cvtColor(img, cv2.COLOR_BGR2HSV)], [0, 1], None, [24, 24], [0, 180, 0, 256])
+                cv2.normalize(rep_hist, rep_hist, alpha=0, beta=1, norm_type=cv2.NORM_MINMAX)
+        if rep_hist is not None:
+            def _hist_sim(c):
+                ex = (c.get("examples") or [None])[0]
+                if not ex or not Path(ex).exists():
+                    return -1.0
+                img = cv2.imread(ex)
+                if img is None:
+                    return -1.0
+                h = cv2.calcHist([cv2.cvtColor(img, cv2.COLOR_BGR2HSV)], [0, 1], None, [24, 24], [0, 180, 0, 256])
+                cv2.normalize(h, h, alpha=0, beta=1, norm_type=cv2.NORM_MINMAX)
+                return float(cv2.compareHist(rep_hist, h, cv2.HISTCMP_CORREL))
+            clusters = sorted(clusters, key=_hist_sim, reverse=True)
+    elif sort_mode == "Greedy similarity" and clusters:
+        reps = {}
+        for c in clusters:
+            ex = (c.get("examples") or [None])[0]
+            if not ex or not Path(ex).exists():
+                continue
+            img = cv2.imread(ex)
+            if img is None:
+                continue
+            h = cv2.calcHist([cv2.cvtColor(img, cv2.COLOR_BGR2HSV)], [0, 1], None, [24, 24], [0, 180, 0, 256])
+            cv2.normalize(h, h, alpha=0, beta=1, norm_type=cv2.NORM_MINMAX)
+            reps[int(c.get("cluster_id", -1))] = h
+
+        remaining = {int(c.get("cluster_id", -1)) for c in clusters}
+        ordered = []
+        if remaining:
+            current = int(max(clusters, key=lambda c: c.get("count", 0)).get("cluster_id", -1))
+            ordered.append(current)
+            remaining.discard(current)
+            while remaining:
+                best_id = None
+                best_score = -1.0
+                for cid in list(remaining):
+                    if current not in reps or cid not in reps:
+                        continue
+                    score = float(cv2.compareHist(reps[current], reps[cid], cv2.HISTCMP_CORREL))
+                    if score > best_score:
+                        best_score = score
+                        best_id = cid
+                if best_id is None:
+                    ordered.extend(sorted(list(remaining)))
+                    break
+                ordered.append(best_id)
+                remaining.discard(best_id)
+                current = best_id
+
+        order_map = {cid: i for i, cid in enumerate(ordered)}
+        clusters = sorted(clusters, key=lambda c: order_map.get(int(c.get("cluster_id", -1)), 1e9))
 
     if not clusters:
         st.info("No clusters found.")
@@ -95,6 +271,41 @@ def render_overview(results: Dict, out_dir: Path) -> None:
                 else:
                     st.write("Pages: none")
 
+                merge_cols = st.columns([2, 1, 1])
+                with merge_cols[0]:
+                    merge_target = st.selectbox(
+                        "Merge into",
+                        [str(c) for c in sorted(cluster_parts.keys()) if c != cid],
+                        key=f"merge_target_{cid}",
+                    )
+                with merge_cols[1]:
+                    if st.button("Merge", key=f"merge_btn_{cid}") and merge_target:
+                        target = int(merge_target)
+                        for p in parts:
+                            idx = int(p.get("index", -1))
+                            st.session_state["overrides"][idx] = target
+                        _save_overrides(out_dir, st.session_state["overrides"])
+                        st.rerun()
+                with merge_cols[2]:
+                    if st.button("Merge Up", key=f"merge_up_{cid}"):
+                        prev_idx = max(0, clusters.index(cluster) - 1)
+                        if prev_idx != clusters.index(cluster):
+                            target = int(clusters[prev_idx].get("cluster_id", -1))
+                            for p in parts:
+                                idx = int(p.get("index", -1))
+                                st.session_state["overrides"][idx] = target
+                            _save_overrides(out_dir, st.session_state["overrides"])
+                            st.rerun()
+
+                if st.button("Break cluster", key=f"break_{cid}"):
+                    next_cluster = max_cluster + 1
+                    for p in parts:
+                        idx = int(p.get("index", -1))
+                        st.session_state["overrides"][idx] = next_cluster
+                        next_cluster += 1
+                    _save_overrides(out_dir, st.session_state["overrides"])
+                    st.rerun()
+
             with st.expander("Show all patches"):
                 if not parts:
                     st.write("No patches recorded for this cluster.")
@@ -122,6 +333,12 @@ def render_overview(results: Dict, out_dir: Path) -> None:
                                 st.image(str(crop_path), width=160)
                             else:
                                 st.write(f"Missing: {crop_path}")
+                            if st.button("Remove", key=f"rm_{cid}_{i}"):
+                                idx = int(part.get("index", -1))
+                                next_cluster = max_cluster + 1
+                                st.session_state["overrides"][idx] = next_cluster
+                                _save_overrides(out_dir, st.session_state["overrides"])
+                                st.rerun()
 
         st.divider()
 
@@ -169,6 +386,9 @@ def main() -> None:
 
     out_dir = Path(args.out).expanduser().resolve()
     results = _load_results(out_dir)
+    overrides = _load_overrides(out_dir)
+    results = _apply_overrides(results, overrides)
+    results["clusters"] = _rebuild_clusters(results)
 
     st.set_page_config(page_title="Instruction Matcher", layout="wide")
     st.title("Instruction Matcher")

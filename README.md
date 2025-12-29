@@ -38,7 +38,6 @@ uv run streamlit run streamlit_app.py -- --out out
 - `instruction_matcher/pipeline.py` main pipeline
 - `instruction_matcher/callout.py` callout detection + part extraction
 - `instruction_matcher/ocr.py` fast qty OCR (template-based)
-- `instruction_matcher/orientation.py` orientation scoring
 - `instruction_matcher/clustering.py` global clustering
 - `streamlit_app.py` dashboard
 

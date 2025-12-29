@@ -232,6 +232,7 @@ dependencies = [
     { name = "numpy" },
     { name = "opencv-python" },
     { name = "pymupdf" },
+    { name = "reportlab" },
     { name = "scikit-learn" },
     { name = "streamlit" },
     { name = "tqdm" },
@@ -244,6 +245,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=2.4.0" },
     { name = "opencv-python", specifier = ">=4.11.0.86" },
     { name = "pymupdf", specifier = ">=1.26.7" },
+    { name = "reportlab", specifier = ">=4.2.0" },
     { name = "scikit-learn", specifier = ">=1.5.2" },
     { name = "streamlit", specifier = ">=1.52.2" },
     { name = "tqdm", specifier = ">=4.67.1" },
@@ -1019,6 +1021,19 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/22/f5/df4e9027acead3ecc63e50fe1e36aca1523e1719559c499951bb4b53188f/referencing-0.37.0.tar.gz", hash = "sha256:44aefc3142c5b842538163acb373e24cce6632bd54bdb01b21ad5863489f50d8", size = 78036 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/2c/58/ca301544e1fa93ed4f80d724bf5b194f6e4b945841c5bfd555878eea9fcb/referencing-0.37.0-py3-none-any.whl", hash = "sha256:381329a9f99628c9069361716891d34ad94af76e461dcb0335825aecc7692231", size = 26766 },
+]
+
+[[package]]
+name = "reportlab"
+version = "4.4.7"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "charset-normalizer" },
+    { name = "pillow" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/f8/a7/4600cb1cfc975a06552e8927844ddcb8fd90217e9a6068f5c7aa76c3f221/reportlab-4.4.7.tar.gz", hash = "sha256:41e8287af965e5996764933f3e75e7f363c3b6f252ba172f9429e81658d7b170", size = 3714000 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e7/bf/a29507386366ab17306b187ad247dd78e4599be9032cb5f44c940f547fc0/reportlab-4.4.7-py3-none-any.whl", hash = "sha256:8fa05cbf468e0e76745caf2029a4770276edb3c8e86a0b71e0398926baf50673", size = 1954263 },
 ]
 
 [[package]]
